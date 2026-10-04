@@ -151,13 +151,14 @@ function collectPayload() {
 
 async function runAdjudication() {
   const version = inputVersion;
+  const payload = collectPayload();
   let resp;
   let data;
   try {
     resp = await fetch("/api/adjudicate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(collectPayload()),
+      body: JSON.stringify(payload),
     });
     data = await resp.json();
   } catch (err) {
@@ -175,7 +176,7 @@ async function runAdjudication() {
     showError(data.error || "裁决失败");
   } else {
     errorBox.hidden = true;
-    renderResults(data.result);
+    renderResults(data.result, normalizeRanges(payload.standards));
   }
 }
 
@@ -186,6 +187,9 @@ form.addEventListener("submit", (e) => {
     clearTimeout(debounceTimer);
     debounceTimer = null;
   }
+  // 等待重算期间同样隐藏结果与复核编辑；版本号递增使在途旧响应失效。
+  inputVersion += 1;
+  clearOutcome();
   pendingHint.hidden = false;
   runAdjudication();
 });
@@ -193,6 +197,58 @@ form.addEventListener("submit", (e) => {
 function showError(msg) {
   errorBox.textContent = `⚠ ${msg}`;
   errorBox.hidden = false;
+}
+
+/* ---------- 人工复核（仅本次页面会话保留） ---------- */
+
+const REVIEW_STATUSES = ["unreviewed", "pass", "question"];
+const REVIEW_LABELS = { unreviewed: "未复核", pass: "通过", question: "存疑" };
+const MAX_NOTE_LEN = 200;
+
+// 复核只保存在内存中，刷新页面即清除；键绑定具体趟内容而非趟序号/行号。
+const reviews = new Map(); // lapKey -> { status, note }
+
+function normalizeRanges(standards) {
+  // 仅在收到合法响应时调用：此时区间必为合法正整数。
+  return {
+    smLo: Number(standards.smMin),
+    smHi: Number(standards.smMax),
+    mfLo: Number(standards.mfMin),
+    mfHi: Number(standards.mfMax),
+  };
+}
+
+// 复核绑定：选手编号 + 三条记录（ID、门、秒数）+ 两段耗时区间。
+// 任一绑定值改变都会得到不同的键，对应旧复核即被丢弃，改回也不恢复。
+function lapKey(lap, runner, ranges) {
+  // 用 JSON 序列化保证无分隔符碰撞：选手编号 + 三条记录的 ID/门/秒数 + 两段区间。
+  return JSON.stringify([
+    runner,
+    lap.start.id,
+    "S",
+    lap.start.time,
+    lap.middle.id,
+    "M",
+    lap.middle.time,
+    lap.finish.id,
+    "F",
+    lap.finish.time,
+    ranges.smLo,
+    ranges.smHi,
+    ranges.mfLo,
+    ranges.mfHi,
+  ]);
+}
+
+// 最新合法裁决中不再采纳的趟，其复核一并丢弃。
+function pruneReviews(validKeys) {
+  for (const key of reviews.keys()) {
+    if (!validKeys.has(key)) reviews.delete(key);
+  }
+}
+
+function getReview(key) {
+  return reviews.get(key) || { status: "unreviewed", note: "" };
 }
 
 /* ---------- 结果渲染 ---------- */
@@ -204,7 +260,39 @@ function gateChip(gate, id, time) {
   </span>`;
 }
 
-function renderResults(result) {
+function reviewOptionsHtml(current) {
+  return REVIEW_STATUSES.map(
+    (s) =>
+      `<option value="${s}"${s === current ? " selected" : ""}>${REVIEW_LABELS[s]}</option>`
+  ).join("");
+}
+
+function reviewBoxHtml(key) {
+  const review = getReview(key);
+  return `
+    <div class="lap-review" data-lap-key="${escapeAttr(key)}">
+      <div class="review-ctrls">
+        <label class="review-field">
+          <span class="review-label">人工复核</span>
+          <select class="review-status">${reviewOptionsHtml(review.status)}</select>
+        </label>
+        <button type="button" class="btn secondary small review-save">保存复核</button>
+        <span class="review-pill ${review.status}">${REVIEW_LABELS[review.status]}</span>
+        <span class="review-msg" role="status" hidden></span>
+      </div>
+      <textarea class="review-note" rows="2" maxlength="${MAX_NOTE_LEN}"
+        placeholder="备注（至多 ${MAX_NOTE_LEN} 字；存疑须填写非空备注）">${escapeHtml(review.note)}</textarea>
+      <div class="review-counter"><span class="review-len">${[...review.note].length}</span> / ${MAX_NOTE_LEN}</div>
+    </div>`;
+}
+
+function renderResults(result, ranges) {
+  const validKeys = new Set();
+  for (const r of result.runners) {
+    for (const lap of r.laps) validKeys.add(lapKey(lap, r.runner, ranges));
+  }
+  pruneReviews(validKeys);
+
   resultsBox.innerHTML = result.runners
     .map((r) => {
       const badge =
@@ -221,6 +309,7 @@ function renderResults(result) {
           ? `<div class="zero-note">该选手没有符合两段耗时区间的完整一趟，计 0 次；全部感应记录列入未采纳。</div>`
           : r.laps
               .map((lap, i) => {
+                const key = lapKey(lap, r.runner, ranges);
                 return `
                 <div class="lap-item">
                   <div class="lap-title">第 ${i + 1} 趟 · 总用时 ${lap.totalTime} 秒</div>
@@ -235,6 +324,7 @@ function renderResults(result) {
                     起点→中途门 <strong>${lap.smTime}</strong> 秒，
                     中途门→终点 <strong>${lap.mfTime}</strong> 秒
                   </div>
+                  ${reviewBoxHtml(key)}
                 </div>`;
               })
               .join("");
@@ -267,6 +357,84 @@ function renderResults(result) {
     })
     .join("");
 }
+
+/* ---------- 复核保存交互（不触发重算、不影响裁决） ---------- */
+
+function setReviewMsg(box, text, ok) {
+  const msg = box.querySelector(".review-msg");
+  if (!text) {
+    msg.hidden = true;
+    msg.textContent = "";
+    msg.classList.remove("error", "ok");
+    return;
+  }
+  msg.textContent = text;
+  msg.classList.toggle("error", !ok);
+  msg.classList.toggle("ok", !!ok);
+  msg.hidden = false;
+}
+
+// 保存失败时把控件还原为此前已保存的复核内容（默认“未复核”）。
+function rollbackReview(box) {
+  const saved = getReview(box.dataset.lapKey);
+  box.querySelector(".review-status").value = saved.status;
+  const note = box.querySelector(".review-note");
+  note.value = saved.note;
+  box.querySelector(".review-len").textContent = [...saved.note].length;
+}
+
+function saveReview(box) {
+  const key = box.dataset.lapKey;
+  const status = box.querySelector(".review-status").value;
+  const note = box.querySelector(".review-note").value;
+
+  if (!REVIEW_STATUSES.includes(status)) {
+    rollbackReview(box);
+    setReviewMsg(box, "复核状态非法，已保持原复核内容。", false);
+    return;
+  }
+  if ([...note].length > MAX_NOTE_LEN) {
+    rollbackReview(box);
+    setReviewMsg(box, `备注至多 ${MAX_NOTE_LEN} 字，已保持原复核内容。`, false);
+    return;
+  }
+  // 存疑必须有非空备注（去除首尾空白后仍须有内容）。
+  if (status === "question" && note.trim() === "") {
+    rollbackReview(box);
+    setReviewMsg(box, "存疑必须填写非空备注，已保持原复核内容。", false);
+    return;
+  }
+
+  if (status === "unreviewed" && note === "") {
+    reviews.delete(key);
+  } else {
+    reviews.set(key, { status, note });
+  }
+
+  const pill = box.querySelector(".review-pill");
+  pill.className = `review-pill ${status}`;
+  pill.textContent = REVIEW_LABELS[status];
+  setReviewMsg(box, "已保存（仅本次页面会话有效）", true);
+}
+
+// 复核控件位于表单之外，其编辑不触发自动重算。
+resultsBox.addEventListener("click", (e) => {
+  if (e.target.classList.contains("review-save")) {
+    saveReview(e.target.closest(".lap-review"));
+  }
+});
+resultsBox.addEventListener("input", (e) => {
+  if (e.target.classList.contains("review-note")) {
+    const box = e.target.closest(".lap-review");
+    box.querySelector(".review-len").textContent = [...e.target.value].length;
+    setReviewMsg(box, "", false); // 继续编辑时清除上次提示
+  }
+});
+resultsBox.addEventListener("change", (e) => {
+  if (e.target.classList.contains("review-status")) {
+    setReviewMsg(e.target.closest(".lap-review"), "", false);
+  }
+});
 
 /* ---------- 工具 ---------- */
 
@@ -307,6 +475,7 @@ const SAMPLE = {
 };
 
 function loadSample() {
+  reviews.clear(); // 载入示例同时清掉此前的人工复核
   document.getElementById("smMin").value = SAMPLE.smMin;
   document.getElementById("smMax").value = SAMPLE.smMax;
   document.getElementById("mfMin").value = SAMPLE.mfMin;
@@ -345,6 +514,7 @@ function clearAll() {
   addRunnerRow();
   recordRows.innerHTML = "";
   addRecordRow();
+  reviews.clear(); // 清空同时清掉全部人工复核
   clearOutcome(); // 同时清掉结果与错误
   pendingHint.hidden = true;
 }

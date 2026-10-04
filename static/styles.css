@@ -200,6 +200,49 @@ input:focus, select:focus {
 .seg-times { margin-top: 0.45rem; color: var(--muted); font-size: 0.84rem; }
 .seg-times strong { color: var(--ink); }
 
+/* 人工复核（仅本次页面会话保留，不影响采纳方案） */
+.lap-review {
+  margin-top: 0.55rem;
+  padding-top: 0.55rem;
+  border-top: 1px dashed var(--line);
+}
+.review-ctrls {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+.review-field { display: inline-flex; align-items: center; gap: 0.4rem; }
+.review-label { color: var(--muted); font-size: 0.84rem; }
+.review-status { padding: 0.3rem 0.5rem; font-size: 0.86rem; }
+.btn.small { padding: 0.28rem 0.7rem; font-size: 0.84rem; }
+.review-pill {
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+.review-pill.pass { background: var(--ok-bg); color: var(--ok); border-color: #a7f3d0; }
+.review-pill.question { background: var(--warn-bg); color: var(--warn); border-color: #fde68a; }
+.review-msg { font-size: 0.8rem; }
+.review-msg.error { color: var(--err); }
+.review-msg.ok { color: var(--ok); }
+.review-note {
+  width: 100%;
+  margin-top: 0.5rem;
+  resize: vertical;
+  min-height: 2.6rem;
+}
+.review-counter {
+  margin-top: 0.2rem;
+  text-align: right;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .zero-note { color: var(--muted); background: #f9fafb; border-radius: 8px; padding: 0.6rem 0.8rem; }
 
 .subsection { margin-top: 0.7rem; }
