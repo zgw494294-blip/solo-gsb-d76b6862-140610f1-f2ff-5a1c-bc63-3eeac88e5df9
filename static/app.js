@@ -106,6 +106,7 @@ function clearOutcome() {
   // 每次修改立即清掉旧结果与旧错误。
   resultsBox.innerHTML = "";
   errorBox.hidden = true;
+  renderedLapKeys = []; // 结果区已清空，旧的趟键索引全部失效
 }
 
 function onInputChanged() {
@@ -195,6 +196,98 @@ function showError(msg) {
   errorBox.hidden = false;
 }
 
+/* ---------- 人工复核（仅本次页面会话，不上传、不影响裁决） ---------- */
+
+// 复核绑定具体的“趟”：选手编号 + 三条记录的 ID/门/秒数 + 该趟两段耗时 + 两段耗时区间，
+// 不按趟序号或记录行号定位。仅保存在页面内存中，刷新页面即全部清除。
+const reviews = new Map(); // key -> { status: "pending"|"pass"|"doubt", note: string }
+const REVIEW_STATUSES = { pending: "未复核", pass: "通过", doubt: "存疑" };
+const MAX_REVIEW_NOTE = 200;
+// 最近一次渲染的趟绑定键（与 DOM 中 data-key-index 一一对应），仅供保存时回查。
+let renderedLapKeys = [];
+
+function currentStandards() {
+  return ["smMin", "smMax", "mfMin", "mfMax"].map((id) =>
+    Number(document.getElementById(id).value.trim())
+  );
+}
+
+function lapReviewKey(runner, lap, standards) {
+  return JSON.stringify([
+    runner,
+    [lap.start.id, "S", lap.start.time],
+    [lap.middle.id, "M", lap.middle.time],
+    [lap.finish.id, "F", lap.finish.time],
+    lap.smTime,
+    lap.mfTime,
+    standards,
+  ]);
+}
+
+function reviewCurrentText(saved) {
+  const status = saved ? saved.status : "pending";
+  const note = saved ? saved.note : "";
+  const base = `当前：${REVIEW_STATUSES[status]}`;
+  return note ? `${base}（备注：${escapeHtml(note)}）` : base;
+}
+
+function reviewBoxHtml(keyIndex, saved) {
+  const status = saved ? saved.status : "pending";
+  const note = saved ? saved.note : "";
+  const options = Object.entries(REVIEW_STATUSES)
+    .map(
+      ([value, label]) => `
+      <label class="review-option">
+        <input type="radio" name="review-status-${keyIndex}" value="${value}" ${
+        value === status ? "checked" : ""
+      } /> ${label}
+      </label>`
+    )
+    .join("");
+  return `
+  <div class="review-box" data-key-index="${keyIndex}">
+    <div class="review-head">
+      <span class="review-label">人工复核</span>
+      <span class="review-current">${reviewCurrentText(saved)}</span>
+      <span class="review-scope">仅本次页面会话保留，刷新即清除</span>
+    </div>
+    <div class="review-status-row">${options}</div>
+    <textarea class="review-note" rows="2" maxlength="${MAX_REVIEW_NOTE}" placeholder="备注（至多 ${MAX_REVIEW_NOTE} 字；选择“存疑”时必填）">${escapeHtml(note)}</textarea>
+    <div class="review-actions">
+      <button type="button" class="btn secondary review-save">保存复核</button>
+      <span class="review-error" hidden></span>
+    </div>
+  </div>`;
+}
+
+// 保存复核：校验失败时不写入，保持原复核内容不变。
+resultsBox.addEventListener("click", (e) => {
+  if (!e.target.classList.contains("review-save")) return;
+  const box = e.target.closest(".review-box");
+  const key = renderedLapKeys[Number(box.dataset.keyIndex)];
+  if (key === undefined) return; // 结果区已被更新的渲染替换
+  const checked = box.querySelector("input[type=radio]:checked");
+  const status = checked ? checked.value : "pending";
+  const note = box.querySelector(".review-note").value;
+  const errEl = box.querySelector(".review-error");
+
+  const fail = (msg) => {
+    errEl.textContent = `⚠ ${msg}；已保留原复核内容`;
+    errEl.hidden = false;
+  };
+  if (note.length > MAX_REVIEW_NOTE) {
+    fail(`备注至多 ${MAX_REVIEW_NOTE} 字`);
+    return;
+  }
+  if (status === "doubt" && note.trim() === "") {
+    fail("选择“存疑”必须填写非空备注");
+    return;
+  }
+  reviews.set(key, { status, note });
+  errEl.hidden = true;
+  box.querySelector(".review-current").innerHTML = reviewCurrentText({ status, note });
+});
+
 /* ---------- 结果渲染 ---------- */
 
 function gateChip(gate, id, time) {
@@ -205,6 +298,19 @@ function gateChip(gate, id, time) {
 }
 
 function renderResults(result) {
+  const standards = currentStandards();
+  const keyOf = (runner, lap) => lapReviewKey(runner, lap, standards);
+
+  // 最新合法裁决不再采纳的趟（含任一绑定值改变的趟）：丢弃其复核，改回也不恢复。
+  const adopted = new Set();
+  for (const r of result.runners) {
+    for (const lap of r.laps) adopted.add(keyOf(r.runner, lap));
+  }
+  for (const key of [...reviews.keys()]) {
+    if (!adopted.has(key)) reviews.delete(key);
+  }
+
+  renderedLapKeys = [];
   resultsBox.innerHTML = result.runners
     .map((r) => {
       const badge =
@@ -221,6 +327,11 @@ function renderResults(result) {
           ? `<div class="zero-note">该选手没有符合两段耗时区间的完整一趟，计 0 次；全部感应记录列入未采纳。</div>`
           : r.laps
               .map((lap, i) => {
+                renderedLapKeys.push(keyOf(r.runner, lap));
+                const reviewHtml = reviewBoxHtml(
+                  renderedLapKeys.length - 1,
+                  reviews.get(renderedLapKeys[renderedLapKeys.length - 1])
+                );
                 return `
                 <div class="lap-item">
                   <div class="lap-title">第 ${i + 1} 趟 · 总用时 ${lap.totalTime} 秒</div>
@@ -235,6 +346,7 @@ function renderResults(result) {
                     起点→中途门 <strong>${lap.smTime}</strong> 秒，
                     中途门→终点 <strong>${lap.mfTime}</strong> 秒
                   </div>
+                  ${reviewHtml}
                 </div>`;
               })
               .join("");
@@ -307,6 +419,7 @@ const SAMPLE = {
 };
 
 function loadSample() {
+  reviews.clear(); // 载入示例同时清掉全部复核记录
   document.getElementById("smMin").value = SAMPLE.smMin;
   document.getElementById("smMax").value = SAMPLE.smMax;
   document.getElementById("mfMin").value = SAMPLE.mfMin;
@@ -333,6 +446,7 @@ function loadSample() {
 function clearAll() {
   // 递增版本号并取消待发的重算：之后在途请求返回也不得恢复结果或错误。
   inputVersion += 1;
+  reviews.clear(); // 清空同时清掉全部复核记录
   if (debounceTimer) {
     clearTimeout(debounceTimer);
     debounceTimer = null;

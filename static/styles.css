@@ -202,6 +202,49 @@ input:focus, select:focus {
 
 .zero-note { color: var(--muted); background: #f9fafb; border-radius: 8px; padding: 0.6rem 0.8rem; }
 
+/* ---------- 人工复核 ---------- */
+.review-box {
+  margin-top: 0.55rem;
+  border-top: 1px dashed var(--line);
+  padding-top: 0.5rem;
+}
+.review-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+.review-label { font-size: 0.82rem; font-weight: 700; color: var(--muted); }
+.review-current { font-size: 0.82rem; white-space: pre-wrap; }
+.review-scope { margin-left: auto; font-size: 0.75rem; color: var(--muted); }
+.review-status-row { display: flex; gap: 0.9rem; flex-wrap: wrap; margin-bottom: 0.35rem; }
+.review-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.review-note {
+  width: 100%;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid #cbd2dd;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  resize: vertical;
+}
+.review-note:focus {
+  outline: 2px solid rgba(29, 78, 216, 0.25);
+  border-color: var(--brand);
+}
+.review-actions { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.35rem; }
+.review-save { padding: 0.3rem 0.7rem; font-size: 0.85rem; }
+.review-error { color: var(--err); font-size: 0.82rem; font-weight: 600; }
+
 .subsection { margin-top: 0.7rem; }
 .subsection h4 { margin: 0 0 0.4rem; font-size: 0.9rem; color: var(--muted); }
 .chip-mini {
